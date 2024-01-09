@@ -34,6 +34,7 @@ Hit :: struct {
     t: f32,
 }
 
+
 Sphere :: struct {
     position :Vector3,
     radius: f32,
@@ -62,7 +63,7 @@ ray_color :: proc(r :Ray) -> Vector3 {
     hit := ray_hit_sphere(r, Sphere{position = {0,0,-1}, radius=0.5}) 
     if hit.is_hit {
         n := la.normalize(ray_at(r, hit.t) - Vector3{0,0,-1.0})
-        return 0.5*Color{n.x + 1.0, n.y + 1.0, n.z + 1.0};
+        return 0.5* (n + Color{1.0,1.0, 1.0});
     }
 
     unit_direction := la.normalize(r.direction);
@@ -106,7 +107,7 @@ ray_hit_sphere :: proc(r: Ray, s: Sphere) -> (hit: Hit) {
     return
 }
 
-ray_hit_any :: proc(
+ray_hit_world :: proc(
     ray: Ray, 
     objs: ..union{Sphere,}
 ) -> Hit {
@@ -192,7 +193,6 @@ img_gen_u32 ::  #force_inline proc(data: []u32) -> U32Img {
 
 
 loop :: proc(img_gen :proc([]u32) -> U32Img) {
-#no_bounds_check{
 
     using rl
     title :: proc () -> cstring {
@@ -239,7 +239,6 @@ loop :: proc(img_gen :proc([]u32) -> U32Img) {
     }
 
     CloseWindow();
-}
 }
 
 
