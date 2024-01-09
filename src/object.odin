@@ -1,0 +1,77 @@
+package tracer
+
+Object ::struct{
+    name: string,
+    pos: [3]f32,
+    rot: [3]f32,
+    // object type,
+    type: f32,
+    radius: f32,
+    cubeSize: [3]f32,
+    // material properties
+    colour:[3]f32,
+    specularColour: [3]f32,
+    isLight :f32,
+    powerOfLight :f32,
+    reflectivity :f32,
+    refractionIndex :f32,
+    percentSpecular :f32,
+    roughness :f32,
+
+};
+
+
+
+object_make :: proc(objtype: int = 0) -> Object {
+  obj: Object
+  set_default_settings(&obj, objtype)
+
+  return obj
+}
+
+
+
+set_default_settings :: proc(using obj: ^Object, objType: int = 0) {
+    if (objType == 0) { // Rought material
+        isLight = 0.0;
+        refractionIndex = -1.0;
+    }
+    else if (objType == 1) { // Light source
+        isLight = 1.0;
+        refractionIndex = -1.0;
+    }
+    else if (objType == 2) { // Lens
+        isLight = 0.0;
+        if (refractionIndex == -1.0) do refractionIndex = 1.0;
+    }
+    name = ""
+    // pos
+    pos[0] = 0.0;
+    pos[1] = 0.0;
+    pos[2] = 0.0;
+    // rotation
+    rot[0] = 0.0;
+    rot[1] = 0.0;
+    rot[2] = 0.0;
+    // colour
+    colour[0] = 1.0;
+    colour[1] = 1.0;
+    colour[2] = 1.0;
+    // specular colour
+    specularColour[0] = 1.0;
+    specularColour[1] = 1.0;
+    specularColour[2] = 1.0;
+    // cube size
+    cubeSize[0] = 1.0;
+    cubeSize[1] = 1.0;
+    cubeSize[2] = 1.0;
+    // other
+    type = 0.0;
+    radius = 1.0;
+    isLight = 0.0;
+    powerOfLight = 1.0;
+    reflectivity = 0.0;
+    refractionIndex = -1.0;
+    percentSpecular = 1.0;
+    roughness = 0.0;
+}

@@ -1,0 +1,326 @@
+package tracer
+import os "core:os"
+import str "core:strings"
+import "core:fmt"
+import c "core:c/libc"
+import gl "vendor:OpenGL"
+import glfw "vendor:glfw"
+import rand "core:math/rand"
+import stb "vendor:stb/image"
+
+memcpy :: c.memcpy
+
+GL_MAJOR_VERSION :: 3
+GL_MINOR_VERSION :: 3
+
+
+import "core:log"
+import "core:time"
+main :: proc() {
+    if ! glfw.Init() {
+        log.error("GLFW init failed")
+        time.sleep(200)
+    }
+    glfw.WindowHint(glfw.CONTEXT_VERSION_MAJOR, GL_MAJOR_VERSION);
+    glfw.WindowHint(glfw.CONTEXT_VERSION_MINOR, GL_MAJOR_VERSION);
+
+
+    // get the resolution of the monitor
+    mode := glfw.GetVideoMode(glfw.GetPrimaryMonitor());
+    WIDTH := mode.width;
+    HEIGHT := mode.height;
+    
+    monitor := glfw.GetPrimaryMonitor()
+    // put gl.fwGetPrimaryMonitor() instead of the first nil argument to create a full screen window
+    window := glfw.CreateWindow(WIDTH, HEIGHT, "Ray tracing", nil, nil);
+    defer glfw.Terminate()
+	defer glfw.DestroyWindow(window)
+    // Error check if the window fails to create
+    if window == nil {
+        fmt.eprintln("GLFW has failed to load the window.")
+    	glfw.Terminate();
+        os.exit(-1)
+    }
+    // Load OpenGL context or the "state" of OpenGL.
+	glfw.MakeContextCurrent(window)
+	// Load OpenGL function pointers with the specficed OpenGL major and minor version.
+	gl.load_up_to(GL_MAJOR_VERSION, GL_MINOR_VERSION, glfw.gl_set_proc_address)
+
+    glfw.MakeContextCurrent(window);
+    gl.Viewport(0, 0, WIDTH, HEIGHT);
+    print_gl_info();
+    
+    // create shaders
+    default_shader    := shader_make("assets/shaders/default.frag"    , "assets/shaders/default.vert");
+    bloomShader       := shader_make("assets/shaders/bloom.frag"      , "assets/shaders/default.vert");
+    postProccesShader := shader_make("assets/shaders/postProcess.frag", "assets/shaders/default.vert");
+    displayShader     := shader_make("assets/shaders/display.frag"    , "assets/shaders/default.vert");
+    // create vao
+    rect_vao := rect_vao_make()
+    // camera
+    cameraPos := [3]f32{ 0.0, 1.0, -3.0 };
+    cameraRotation := [3]f32{ 0.0, 0.0, 0.0 };
+    cameraSpeed := 0.1;
+    mouseSensitivity := 1.0;
+    camera := camera_make(&window, cameraPos, cameraRotation, cast(f32)cameraSpeed, cast(f32) mouseSensitivity);
+    
+    // random seeds
+    rSeed1, rSeed2: [2]f64;
+    
+    // variables to track if a button was pressed in previous frame
+    keyRlastFrame      := glfw.RELEASE;
+    keyElastFrame      := glfw.RELEASE;
+    keyFlastFrame      := glfw.RELEASE;
+    keyTlastFrame      := glfw.RELEASE;
+    keyEscapelastFrame := glfw.RELEASE;
+    
+    // skybox texture
+    skybox := skybox_make(cast(int)WIDTH, cast(int)HEIGHT);
+    
+    texture1            := texture_make(cast(int)WIDTH, cast(int)HEIGHT);
+    texture2            := texture_make(cast(int)WIDTH, cast(int)HEIGHT);
+    bloomTexture        := texture_make(cast(int)WIDTH, cast(int)HEIGHT);
+    postProcessTexture  := texture_make(cast(int)WIDTH, cast(int)HEIGHT);
+    
+    framebuffer1        := frame_buffer_make(2, texture1.tex, bloomTexture.tex);
+    framebuffer2        := frame_buffer_make(2, texture2.tex, bloomTexture.tex);
+    postProcessFBuffer  := frame_buffer_make(1, postProcessTexture.tex, 0);
+    
+    scene: Scene;
+    scene = scene_make()
+    mygui: MyGui = mygui_make(&scene, &skybox, &camera, WIDTH, HEIGHT, &window);
+    
+    // frames without camera movement
+    frames_still := 0;
+    
+    // Create Ping Pong Framebuffers for repetitive blurring
+    pingpongFBO:     [2]u32;
+    pingpongTexture: [2]u32;
+    gl.GenFramebuffers(2, raw_data(&pingpongFBO));
+    gl.GenTextures(2, raw_data(&pingpongTexture));
+    for i := 0; i < 2; i += 1 {
+        gl.BindFramebuffer(gl.FRAMEBUFFER, pingpongFBO[i]);
+        gl.BindTexture(gl.TEXTURE_2D, pingpongTexture[i]);
+        gl.TexImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, WIDTH, HEIGHT, 0, gl.RGB, gl.FLOAT, nil);
+        gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+        gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAX_LEVEL, 7);
+        gl.GenerateMipmap(gl.TEXTURE_2D);
+        gl.FramebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, pingpongTexture[i], 0);
+    }
+    
+    glfw.SwapInterval(1 if mygui.vSync else 0);
+    for !glfw.WindowShouldClose(window) {
+        frames_still += 1;
+		if mygui.isMouseControl { camera_check_update(&camera, &frames_still); camera_update(&camera); }
+        camera_check_update(&camera, &frames_still);
+        camera_update(&camera)
+        
+        update_seeds(rSeed1[:], rSeed2[:]);
+        gl.ClearColor(0.0, 0.0, 0.0, 0.0);
+        gl.Clear(gl.COLOR_BUFFER_BIT);
+    
+    
+        currentTexture := (frames_still % 2 == 1) ? texture1 : texture2;
+        lastTexture := (frames_still % 2 == 2) ? texture1 : texture2;
+        currentFramebuffer := (frames_still % 2 == 1) ? framebuffer2 : framebuffer1;
+    
+        gl.BindFramebuffer(gl.FRAMEBUFFER, cast(u32)currentFramebuffer.buf);
+        shader_activate(default_shader)
+        // pass in all the uniforms
+
+        uniform2f(default_shader, "resolution", cast(f32) WIDTH, cast(f32) HEIGHT);
+        uniform1f(default_shader, "frames_still", cast(f32)frames_still);
+        uniform2f(default_shader, "rSeed1", cast(f32)rSeed1[0], cast(f32)rSeed1[1]);
+        uniform2f(default_shader, "rSeed2", cast(f32)rSeed2[0], cast(f32)rSeed2[1]);
+        uniform3f(default_shader, "CameraPosition", camera.Pos[0], camera.Pos[1], camera.Pos[2]);
+        uniform3f(default_shader, "CameraRotation", camera.Rot[0], camera.Rot[1], camera.Rot[2]);
+        uniform1f(default_shader, "treshHoldIntensity", mygui.tresholdIntensity);
+        if mygui.renderMode {
+            uniform1f(default_shader,"MAX_REFLECTIONS", cast(f32)mygui.MAX_REFLECTIONS_RENDER_MODE);
+            uniform1f(default_shader,"NUMBER_OF_SAMPLES", cast(f32)mygui.NUMBER_OF_SAMPLES_RENDER_MODE);
+        } else {
+            uniform1f(default_shader, "MAX_REFLECTIONS", cast(f32)mygui.MAX_REFLECTIONS_PREVIEW_MODE);
+            uniform1f(default_shader, "NUMBER_OF_SAMPLES", cast(f32)mygui.NUMBER_OF_SAMPLES_PREVIEW_MODE);
+        }
+        uniform1f(default_shader, "focusDistance", mygui.focusDistance);
+        uniform1f(default_shader, "apertureSize", mygui.apertureSize);
+        uniform1f(default_shader, "zoom", mygui.zoom);
+        uniform1f(default_shader, "colorMultiplierWhenReachedMaxRef", mygui.colourMultiplier);
+        uniform1i(default_shader, "showNormals", cast(i32)mygui.showNormals);
+
+        if ! mygui.renderMode {
+            uniformfs(default_shader,"objects", scene.sceneData1D[:]);
+        }
+
+	uniform3f(default_shader, "skyboxRotation", mygui.skybox.rotation[0], mygui.skybox.rotation[1], mygui.skybox.rotation[2]);
+	uniform1i(default_shader, "planeGrid",cast(i32) mygui.planeGrid);
+	uniform3f(default_shader, "gridCol2", mygui.gridCol2[0], mygui.gridCol2[1], mygui.gridCol2[2]);
+	uniform1f(default_shader, "tileSize", mygui.tileSize);
+	uniform1i(default_shader, "useSkyboxColor", cast(i32)mygui.useSkyboxColour);
+	uniform3f(default_shader, "skyboxColor", skybox.col[0], skybox.col[1], skybox.col[2]);
+	uniform1i(default_shader, "skybox", 0);
+	uniform1i(default_shader, "tex", 1);
+
+    gl.BindVertexArray(cast(u32)rect_vao.VAO);
+    skybox_active_and_bind(&skybox, gl.TEXTURE0);
+    texture_active_and_bind(currentTexture, gl.TEXTURE0);
+    gl.DrawArrays(gl.TRIANGLES, 0, 6); // render
+    
+
+    // bloom
+    // Bounce the image data around to blur multiple times
+    horizontal := true;
+    first_iteration := true;
+		if mygui.doBloom {
+			shader_activate(bloomShader)
+			for i := 0; i < mygui.numberOfBounces; i += 1{
+				gl.BindFramebuffer(gl.FRAMEBUFFER, pingpongFBO[int(horizontal)]);
+			    uniform1i(bloomShader, "horizontal", cast(i32)horizontal);
+			    uniform1i(bloomShader, "tex", 2);
+			    uniform1i(bloomShader, "uMaxLod", cast(i32)mygui.bloomMaxLod);
+
+				gl.ActiveTexture(gl.TEXTURE2);
+				if first_iteration {
+					gl.BindTexture(gl.TEXTURE_2D, cast(u32)bloomTexture.tex);
+					first_iteration = false;
+				} else {
+					gl.BindTexture(gl.TEXTURE_2D, pingpongTexture[int(!horizontal)]);
+				}
+				gl.DrawArrays(gl.TRIANGLES, 0, 6);
+				gl.GenerateMipmap(gl.TEXTURE_2D);
+				horizontal = !horizontal;
+			}
+		}
+
+		// post procesing
+		postProcessFBuffer->bind()
+
+		shader_activate(postProccesShader)
+        uniform1i(postProccesShader, "tex", 3)
+		uniform1i(postProccesShader, "bloomTex", 4);
+		uniform1f(postProccesShader, "bloomIntensity", mygui.bloomIntensity);
+		uniform2f(postProccesShader, "resolution", auto_cast WIDTH, auto_cast HEIGHT);
+		uniform1f(postProccesShader, "brightness", mygui.brightness);
+		uniform1f(postProccesShader, "expousure", mygui.expousure);
+		uniform1f(postProccesShader, "contrast", mygui.contrast);
+
+		texture_active_and_bind(lastTexture, gl.TEXTURE3);
+		gl.ActiveTexture(gl.TEXTURE4);
+		gl.BindTexture(gl.TEXTURE_2D, pingpongTexture[int(!horizontal)]);
+		gl.DrawArrays(gl.TRIANGLES, 0, 6);
+//
+		// display texture
+		gl.BindFramebuffer(gl.FRAMEBUFFER, 0);
+        shader_activate(displayShader)
+		uniform1i(displayShader, "tex", 5);
+		uniform2f(displayShader, "resolution", auto_cast WIDTH, auto_cast HEIGHT);
+		texture_active_and_bind(postProcessTexture, gl.TEXTURE5);
+		gl.DrawArrays(gl.TRIANGLES, 0, 6);
+		// update
+		mygui_update(&mygui)
+		glfw.SwapBuffers(window);
+		glfw.PollEvents();
+
+		if (mygui.onConstantUpdate && !mygui.renderMode) do frames_still = 0;
+		if (!mygui.addObjectName && !mygui.isSaveFile)
+		{
+			// change render mode
+			if checkKey(glfw.KEY_R, &keyRlastFrame, &window) { frames_still = 0; mygui.renderMode = !mygui.renderMode;  fmt.printf("your on render mode ? R:%v\n", mygui.renderMode)}
+			// check if the Escape button is pressed
+			if (checkKey(glfw.KEY_ESCAPE, &keyEscapelastFrame, &window)) do break;
+			// change mouse control
+			if (checkKey(glfw.KEY_E, &keyElastFrame, &window)) do mygui.isMouseControl = !mygui.isMouseControl;
+			// hide gui
+			if (checkKey(glfw.KEY_F, &keyFlastFrame, &window)) do mygui.hideGUI = !mygui.hideGUI;
+			// make screenshot
+			if (checkKey(glfw.KEY_T, &keyTlastFrame, &window)) {
+				mygui.showMessage = true;
+                path := fmt.tprintf("./assets/images/screenshots/%v%v", random_name(8), ".png");
+                fmt.printf("you are saving a screen shot at %v\n", path)
+				save_texture_as_img(&window, auto_cast lastTexture.tex, auto_cast WIDTH, auto_cast HEIGHT, path);
+			}
+              
+		}
+	}
+
+	// Delete all the objects we've created
+	react_vao_delete(&rect_vao)
+	shader_delete(default_shader)
+	shader_delete(bloomShader)
+	shader_delete(postProccesShader)
+    skybox_delete(&skybox)
+    texture_delete(&texture1)
+    texture_delete(&texture2)
+    texture_delete(&bloomTexture)
+    texture_delete(&postProcessTexture)
+	framebuffer1->delete()
+	framebuffer2->delete()
+	postProcessFBuffer->delete();
+}
+
+update_seeds :: proc(rSeed1 : []f64, rSeed2 :[]f64) {
+    randi :: rand.int63
+	rSeed1[0] = f64(randi() % 10000) / 100.0;
+	rSeed1[1] = f64(randi() % 10000) / 100.0;
+
+	rSeed2[0] = f64(randi() % 10000) / 100.0;
+	rSeed2[1] = f64(randi() % 10000) / 100.0;
+}
+
+import "core:builtin"
+save_texture_as_img :: proc(window: ^glfw.WindowHandle, textureID: int, width: int, height: int, filename: string) {
+    gl.ActiveTexture(gl.TEXTURE0);
+    gl.BindTexture(gl.TEXTURE_2D, cast(u32) textureID);
+    
+    pixels := make([dynamic]u8, width*height*3)
+    defer builtin.delete(pixels)
+    
+    gl.GetTexImage(gl.TEXTURE_2D, 0, gl.RGB, gl.UNSIGNED_BYTE, raw_data(pixels));
+    
+    // Flip the pixel data vertically
+    flipped_pixels:= make([dynamic]u8, width*height*3)
+    defer builtin.delete(flipped_pixels)
+    for y := 0; y < height; y += 1 {
+    	memcpy(&raw_data(flipped_pixels)[y * width * 3] , &raw_data(pixels)[(height - y - 1) * width * 3], uint(width * 3))
+    }
+    stb.write_png(str.clone_to_cstring(filename), auto_cast width, auto_cast height, 3, raw_data(flipped_pixels), auto_cast width * 3);
+    fmt.printf("Saved image at %v\n", filename)
+    
+    gl.BindTexture(gl.TEXTURE_2D, 0);
+}
+
+
+
+random_name :: proc(length:=2) -> string {
+    charset := "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_";
+    charsetLength := len(charset);
+    name := make([dynamic]u8, length)
+	for i := 0; i < length; i += 1 {
+		name[i] = charset[rand.int63() % auto_cast charsetLength];
+	}
+
+	return string(name[:]);
+}
+
+print_gl_info :: proc() {
+    renderer := gl.GetString(gl.RENDERER);
+    version  := gl.GetString(gl.VERSION);
+    vendor   := gl.GetString(gl.VENDOR);
+    shadinglanguageVersion := gl.GetString(gl.SHADING_LANGUAGE_VERSION);
+    fmt.printf(
+        "Renderer: %v\nOpenGL version supported: %v\nVendor: %v\nGLSL version: %v\n",
+        renderer, version, vendor, shadinglanguageVersion
+    );
+}
+
+checkKey :: proc(keyToBePressed: uint,  keyLastFrame: ^int,  window:^glfw.WindowHandle) -> bool {
+  pressed := false;
+	if (glfw.GetKey(window^, auto_cast keyToBePressed) == glfw.PRESS && ! (keyLastFrame^ == glfw.PRESS)) {
+		pressed = true;
+	}
+	keyLastFrame^ = auto_cast glfw.GetKey(window^, auto_cast keyToBePressed);
+	return pressed;
+}
