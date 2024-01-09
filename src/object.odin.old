@@ -17,7 +17,6 @@ Object ::struct{
     refractionIndex :f32,
     percentSpecular :f32,
     roughness :f32,
-
 };
 
 
