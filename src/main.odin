@@ -1,29 +1,82 @@
 package tracer
 
-
-
-ASPECT_RATIO  :f32 = 16.0 / 9.0
-
-SCREEN_WIDTH  :i32 = 900;
-SCREEN_HEIGHT :i32 = cast(i32) (f32(SCREEN_WIDTH)/ASPECT_RATIO)
-
-
-IMAGE_WIDTH  : i32 =  SCREEN_WIDTH;
-IMAGE_HEIGHT : i32 =  SCREEN_HEIGHT;
-
-// VIEWPORT_WIDTH  :f32: f32(VIEWPORT_HEIGHT* f32(1)/f32(ASPECT_RATIO));
-VIEWPORT_WIDTH  :f32 = VIEWPORT_HEIGHT * (f32(IMAGE_WIDTH)/f32(IMAGE_HEIGHT));
-VIEWPORT_HEIGHT :f32= 2.0
-
-samples_per_pixel := 260;
-
 main :: proc () {
-    fmt.println(IMAGE_HEIGHT)
+    rl.TraceLog(.INFO, 
+        fmt.ctprintf(
+            "Image Height =%v, Width=%v",
+            IMAGE_HEIGHT, IMAGE_WIDTH
+        )
+    )
     assert(SCREEN_HEIGHT*SCREEN_WIDTH > 0)
     assert(IMAGE_HEIGHT*IMAGE_WIDTH > 0)
 
     loop(render);
 }
+
+Material :: struct {
+    scatter: #type proc(self: ^Material, ray: Ray, hit: Hit) -> (attenuation: Color, scattered: Ray, ok: bool),
+}
+
+#assert(size_of(Material) == 8)
+
+Shit_Diffuse_Material  :: struct {
+    using _ : Material,
+    albedo: Color,
+}
+
+Lambertian_Material :: struct {
+    using _ : Material,
+    albedo: Color,
+}
+
+make_lambertian_material :: proc(albedo :Color = {0.5, 0.5, 0.5}) -> (self: Lambertian_Material) {
+
+    scatter :: proc(self: ^Material, ray: Ray, hit: Hit) -> (attenuation: Color, scattered: Ray, ok: bool) {
+        scatter_direction := hit.normal + vector3_random_unit();
+        scattered = ray_make(hit.position, scatter_direction);
+        // Catch degenerate scatter direction
+        if vector3_near_zero(scatter_direction) {
+            scatter_direction = hit.normal
+        }
+        attenuation = (cast(^Lambertian_Material)self)^.albedo;
+        ok = true
+        return
+    }
+
+
+    self.scatter = scatter
+    self.albedo = albedo
+
+    return
+
+}
+
+
+Metal_Material :: struct {
+    using _ : Material,
+    albedo: Color,
+}
+
+make_metal_material :: proc(albedo :Color = {0.5, 0.5, 0.5}) -> (self: Metal_Material) {
+    Self :: ^Metal_Material
+
+    scatter :: proc(self: ^Material, ray: Ray, hit: Hit) -> (attenuation: Color, scattered: Ray, ok: bool) {
+        reflected := la.reflect(la.normalize(ray.direction), hit.normal)
+        scattered = ray_make(hit.position, reflected);
+        // Catch degenerate scatter direction
+        attenuation = (cast(Self)self)^.albedo;
+        ok = true
+        return
+    }
+
+
+    self.scatter = scatter
+    self.albedo = albedo
+
+    return
+
+}
+
 
 U32Img :: struct {
     width, height :i32,
@@ -34,16 +87,25 @@ Hit :: struct {
     is_hit, is_front_face: bool,
     position, normal :Vector3,
     t: f32,
+    material: ^Material
 }
 
 
 Sphere :: struct {
     position :Vector3,
     radius: f32,
+    material : ^Material,
 }
 
-Vector3  :typeid: #type rl.Vector3
-Color    :typeid: #type rl.Vector3
+sphere_make :: proc(position:= Vector3{0,0,0}, radius: f32=0.5, material: ^Material = nil) -> (self :Sphere){
+    self.position = position
+    self.radius = radius
+    self.material = material
+    return 
+}
+
+Vector3  :: #type rl.Vector3
+Color    :: #type rl.Vector3
 
 Ray :: struct {
     using _: rl.Ray,
@@ -53,17 +115,54 @@ Ray :: struct {
 Object :: union{Sphere}
 
 Scene :: struct {
+    id: int,
     objs: [dynamic] Object,
 }
 
-make_scene :: proc() -> (self: Scene){
+
+vector3_near_zero :: proc (self: Vector3) -> bool {
+    s :f32 = 1e-8;
+    return math.abs(self[0]) < s && math.abs(self[1]) < s && math.abs(self[2]) < s;
+}
+
+vector3_random :: proc (min :f32 = 0, max:f32 = 1.0) -> Vector3 {
+    return {rand.float32_range(min, max), rand.float32_range(min, max), rand.float32_range(min, max)};
+}
+
+vector3_random_in_unit_sphere :: proc() -> Vector3 {
+    for true {
+        p := vector3_random(-1,1)
+        if la.dot(p, p) < 1 {
+            return p
+        }
+    }
+    return {}
+}
+
+vector3_random_unit :: proc() -> Vector3 {
+    return la.normalize(vector3_random_in_unit_sphere())
+}
+
+vector3_random_on_hemisphere :: proc(normal: Vector3) -> Vector3 {
+    on_unit_sphere := vector3_random_unit();
+    // In the same hemisphere as the normal
+    if la.dot(on_unit_sphere, normal) > 0.0 do return on_unit_sphere;
+    return -on_unit_sphere;
+}
+
+make_scene :: proc(objs:[dynamic]Object = nil) -> (self: Scene){
+    @static id := 0
+    self.id = id
+    id += 1
+    self.objs = objs if objs != nil else [dynamic]Object{}
+
     return
 }
 
-ray_make :: proc(position := Vector3{0,0,0}, direction:= Vector3{0,0,1}) -> (ray: Ray) {
+ray_make :: proc(position := Vector3{0,0,0}, direction := Vector3{0,0,1}) -> (ray: Ray) {
     ray.position = position 
     ray.direction = direction 
-    ray.tmin = 0.001
+    ray.tmin = 0.0025
     ray.tmax = math.F32_MAX
     return
 }
@@ -72,25 +171,31 @@ ray_at :: proc(r :Ray, t: f32) -> rl.Vector3 {
     return r.position + r.direction*t;
 }
 
-ray_color_scene :: proc(r :Ray, scene: Scene) -> Vector3 {
+ray_color_scene :: proc(r :Ray, scene: Scene, depth := MAX_BOUNCE_DEPTH) -> Vector3 {
+    @static reflectance :f32 = 0.5
+    @static lambertion := true
+
+    if depth <= 0 do return {0,0,0}
+
     hit := ray_hit_scene(r, scene) 
     if hit.is_hit {
         // n := la.normalize(ray_at(r, hit.t) - Vector3{0,0,-1.0})
-        hit.normal = la.normalize(hit.normal)
-        return 0.5* (hit.normal + Color{1.0,1.0, 1.0});
+        attenuation, scattered, ok := hit.material->scatter(r, hit)
+        if ok {
+            return attenuation * ray_color_scene(scattered, scene, depth-1);
+        }
+        return Color{0,0,0}
     }
 
     unit_direction := la.normalize(r.direction);
-
     a := 0.5*(unit_direction.y + 1.0);
-
     start := Vector3{1.0, 1.0, 1.0}
     end   := Vector3{0.5, 0.7, 1.0}
     return auto_cast (1.0-a)*start + a*end;
 }
 
 ray_color_sphere :: proc(r :Ray) -> Vector3 {
-    hit := ray_hit(r, Sphere{{0,0,-1}, 0.5}) 
+    hit := ray_hit(r, sphere_make({0,0,-1}, 0.5)) 
     if hit.is_hit {
         n := la.normalize(ray_at(r, hit.t) - Vector3{0,0,-1.0})
         return 0.5* (n + Color{1.0,1.0, 1.0});
@@ -136,6 +241,7 @@ ray_hit_sphere :: proc(r: Ray, s: Sphere) -> (hit: Hit) {
     hit.normal = (hit.position - s.position) / s.radius;
     hit.is_front_face = la.dot(r.direction, hit.normal) < 0;
     hit.normal = hit.normal if hit.is_front_face else -hit.normal;
+    hit.material = s.material
     return
 }
 
@@ -194,22 +300,23 @@ render ::  #force_inline proc(data: []u32) -> U32Img {
         gf *= scale;
         bf *= scale;
 
+        rf = math.pow(rf, 1.0/f32(GAMMA));
+        gf = math.pow(gf, 1.0/f32(GAMMA));
+        bf = math.pow(bf, 1.0/f32(GAMMA));
+
         @static min, max :f32 = 0.0, 0.999
         // assert(r <= 1.0 && g <= 1.0 && b <= 1.0)
         r := u32(256 * math.clamp(rf, min, max));
         g := u32(256 * math.clamp(gf, min, max));
         b := u32(256 * math.clamp(bf, min, max));
+
         a := u32(0xff)
         color_as_u32 :u32 =  (a << 24) | (b << 16) | (g << 8) | (r);
         return color_as_u32;
     }
 
 
-    scene := make_scene()
-    append(&scene.objs, 
-        Sphere{position = {0,0,-1}, radius=0.5},
-        Sphere{position = {0,-100.5,-1}, radius=100.0},
-    )
+    scene := SCENE
     focal_length := 1.0
 
     camera_center := Vector3{0,0,0}
@@ -230,7 +337,7 @@ render ::  #force_inline proc(data: []u32) -> U32Img {
             x,y: f32 = f32(i),f32(j)
             pixel_color := Color{0,0,0}
             pixel_center := pixel_0_0 + (x * Δu) + (y * Δv);
-            for _ in 0..<samples_per_pixel {
+            for _ in 0..<SAMPLES_PER_PIXEL {
                 pixel_sample := pixel_center + pixel_sample_square(Δu, Δv);
 
                 ray_origin  := camera_center
@@ -246,7 +353,7 @@ render ::  #force_inline proc(data: []u32) -> U32Img {
 
             }
 
-            data[j*width + i] = color_u32(pixel_color, samples_per_pixel)
+            data[j*width + i] = color_u32(pixel_color, SAMPLES_PER_PIXEL)
         }
     }
 
@@ -276,7 +383,8 @@ loop :: proc(img_gen :proc([]u32) -> U32Img) {
     SetTargetFPS(60);
 
 
-    @static IMG_DATA : [4000*4000]u32;
+    @static IMG_DATA: [4000*4000]u32;
+
     data := IMG_DATA[:]
     img : Image;
     img.format = PixelFormat.UNCOMPRESSED_R8G8B8A8
@@ -294,8 +402,8 @@ loop :: proc(img_gen :proc([]u32) -> U32Img) {
     { // Render as png just once
         u32img = img_gen(data)
         img.data = u32img.data;
-        ExportImage(img, fmt.ctprintf("img_%v.png",samples_per_pixel))
-        samples_per_pixel = 1
+        ExportImage(img, fmt.ctprintf("img_%v.png",SAMPLES_PER_PIXEL))
+        SAMPLES_PER_PIXEL = 1
     }
 
     for !WindowShouldClose() {

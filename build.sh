@@ -1,14 +1,17 @@
 #!/usr/bin/sh
+set -xe
 FOLDER_NAME="path_tracer"
 LINUX_PATH="/mnt/c/Dev/code/$FOLDER_NAME"
 WIN_PATH="C:\\Dev\\code\\$FOLDER_NAME\\"
-ODIN_FLAGS=" -o:speed -disable-assert -no-bounds-check -no-thread-local "
+ODIN_FLAGS=" -o:speed -disable-assert -no-bounds-check "
+ODIN_FLAGS=""
 
 CMD_DEV="odin run src $ODIN_FLAGS"
 
-CMD_DEBUG="odin run src -debug -vet-unused -vet-shadowing -warnings-as-errors -out:a.debug.exe"
-CMD_RELEASE="odin run src -o:aggressive -disable-assert -no-bounds-check -microarch:native -obfuscate-source-code-locations -out:release"
+CMD_DEBUG="odin run src -debug -vet-unused -vet-shadowing -warnings-as-errors"
+CMD_RELEASE="odin run src -o:speed -disable-assert -no-bounds-check -microarch:native"
 
+rm -rf "$LINUX_PATH"
 cp -rf . "$LINUX_PATH"
 
 
