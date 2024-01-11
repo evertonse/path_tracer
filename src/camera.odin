@@ -1,99 +1,79 @@
 package tracer
 
-import fmt "core:fmt"
-import math "core:math"
-import gl "vendor:OpenGL"
-import "vendor:glfw"
-
 Camera :: struct {
-    Pos: [3]f32,
-    Rot: [3]f32,
-    Speed: f32,
-    Sensitivity: f32,
-    Window: ^glfw.WindowHandle,
-    isUpdate: bool,
-    WIDTH, HEIGHT: int,
+    samples_per_pixel: i32,                 // Count of random samples for each pixel
+    max_bounce_depth : i32,                 // Maximum number of ray bounces into scene
+    image_width      : i32,                 // Rendered image width in pixel count
+    image_height     : i32,                 // Rendered image height
+
+    viewport_width   : i32,                 
+    viewport_height  : i32,                 
+
+    fov              : f32,                 // Vertical view angle (field of view)
+    lookfrom         : Vector3,             // Point camera is looking from
+    lookat           : Vector3,             // Point camera is looking at
+    up               : Vector3,             // Camera-relative "up" direction
+
+    defocus_angle    : f32,                 // Variation angle of rays through each pixel
+    focus_dist       : f32,                 // Distance from camera lookfrom point to plane of perfect focus
+    focal_length     : f32,                 // idk
+    center           : Vector3,             // Camera center
+    pixel_0_0        : Vector3,             // Location of pixel 0, 0
+    Δu               : Vector3,             // Offset to pixel to the right
+    Δv               : Vector3,             // Offset to pixel below
+    u, v, w          : Vector3,             // Camera frame basis vectors
+    defocus_disk_u   : Vector3,             // Defocus disk horizontal radius
+    defocus_disk_v   : Vector3,             // Defocus disk vertical radius
 }
 
-camera_make :: proc(window: ^glfw.WindowHandle, position: [3]f32, rotation: [3]f32, speed: f32, sensitivity: f32) -> (cam: Camera) {
-    using cam;
-  	Pos[0] = position[0];
-    Pos[1] = position[1];
-    Pos[2] = position[2];
-    Rot[0] = rotation[0];
-    Rot[1] = rotation[1];
-    Rot[2] = rotation[2];
-    Speed = speed;
-    Window = window;
-    Sensitivity = sensitivity;
-    x,y := glfw.GetWindowSize(Window^)
-	WIDTH, HEIGHT =  cast(int) x, cast(int)y
-    return cam
+
+/* usage: Create a default camera, then change the fields that you want xD*/
+camera_default :: #force_inline proc(
+    aspect_ratio     :f32 = 1,
+    image_width      :i32 = 800,
+    samples_per_pixel:i32 = 10,
+    max_bounce_depth :i32 = 10,
+    fov              :f32 = 90.0,         
+    lookfrom         := Vector3{0, 0,-1}, 
+    lookat           := Vector3{0, 0, 0},
+    up               := Vector3{0, 1, 0},  
+    defocus_angle    :f32 = 0, 
+    focus_dist       :f32 = 10, 
+    center           := Vector3{0, 0, 0},  
+) -> (self: Camera) {
+    self.image_width       = image_width      
+    self.image_height      = cast(i32) (f32(image_width)/aspect_ratio)
+    self.samples_per_pixel = samples_per_pixel
+    self.max_bounce_depth  = max_bounce_depth 
+    self.fov               = fov             
+    self.lookfrom          = lookfrom         
+    self.lookat            = lookat           
+    self.up                = up              
+    self.defocus_angle     = defocus_angle
+    self.focus_dist        = focus_dist
+
+    h := math.tan(math.to_radians(fov)/2)
+    self.viewport_height = cast(i32) (2 * h * self.focal_length)
+    self.viewport_width  = cast(i32) (f32(self.viewport_height*self.image_width)/f32(self.image_height))
+        
+    viewport_u := Vector3{f32(self.viewport_width),0,0}
+    viewport_v := Vector3{0, -f32(self.viewport_height),0}
+
+    self.Δu = viewport_u/f32(self.image_width)
+    self.Δv = viewport_v/f32(self.image_height)
+
+    viewport_upper_left := self.center - Vector3{0,0, f32(self.focal_length)} - viewport_u/2.0 - viewport_v/2.0
+    self.pixel_0_0 = viewport_upper_left +0.5*(self.Δu  + self.Δv)
+
+    return 
 }
 
-camera_rotate :: proc(using camera: ^Camera) {
-    // mouse position
-    xpos, ypos := glfw.GetCursorPos(camera.Window^)
-    fmt.printf("x=%v y=%v\n", xpos, ypos)
+import os   "core:os"
+import str  "core:strings"
+import fmt  "core:fmt"
+import mem  "core:mem"
+import la   "core:math/linalg"
+import math "core:math"
+import rand "core:math/rand"
 
-    // normalized mouse position
-    normalizedX := (xpos - f64(camera.WIDTH )/ 2.0) / f64(camera.WIDTH )
-    normalizedY := (ypos - f64(camera.HEIGHT)/ 2.0) / f64(camera.HEIGHT)
-
-    x :f32 = cast(f32)(normalizedX * 360.0 * f64(camera.Sensitivity))
-    y :f32 = cast(f32)(normalizedY * 180.0 * f64(camera.Sensitivity))
-
-    if x != cast(f32)camera.Rot[0] || y != camera.Rot[0] {
-        camera.isUpdate = true
-    }
-    camera.Rot[0] = x
-    camera.Rot[1] = y
-}
-
-camera_move :: proc(using camera: ^Camera) {
-    cos_a := math.cos(camera.Rot[0] * (3.141592 / 180.0))
-    sin_a := math.sin(camera.Rot[0] * (3.141592 / 180.0))
-
-    if glfw.GetKey(camera.Window^, glfw.KEY_W) == glfw.PRESS { // forward
-        camera.Pos[2] += camera.Speed * cos_a
-        camera.Pos[0] += camera.Speed * sin_a
-        camera.isUpdate = true
-    }
-    if glfw.GetKey(camera.Window^, glfw.KEY_S) == glfw.PRESS { // backward
-        camera.Pos[2] -= camera.Speed * cos_a
-        camera.Pos[0] -= camera.Speed * sin_a
-        camera.isUpdate = true
-    }
-    if glfw.GetKey(camera.Window^, glfw.KEY_D) == glfw.PRESS { // right
-        camera.Pos[2] -= camera.Speed * sin_a
-        camera.Pos[0] += camera.Speed * cos_a
-        camera.isUpdate = true
-    }
-    if glfw.GetKey(camera.Window^, glfw.KEY_A) == glfw.PRESS { // left
-        camera.Pos[2] += camera.Speed * sin_a
-        camera.Pos[0] -= camera.Speed * cos_a
-        camera.isUpdate = true
-    }
-    if glfw.GetKey(camera.Window^, glfw.KEY_LEFT_SHIFT) == glfw.PRESS { // down
-        camera.Pos[1] -= camera.Speed
-        camera.isUpdate = true
-    }
-    if glfw.GetKey(camera.Window^, glfw.KEY_SPACE) == glfw.PRESS { // up
-        camera.Pos[1] += camera.Speed
-        camera.isUpdate = true
-    }
-}
-
-camera_check_update :: proc(using camera: ^Camera, updateVariable: ^int) {
-    if isUpdate {
-        fmt.println("Do be updated")
-        updateVariable^ = 1
-        isUpdate = false
-    }
-}
-
-camera_update :: proc(camera: ^Camera) {
-    camera_rotate(camera)
-    camera_move(camera)
-}
-
+import rl "vendor:raylib"

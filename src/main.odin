@@ -13,71 +13,6 @@ main :: proc () {
     loop(render);
 }
 
-Material :: struct {
-    scatter: #type proc(self: ^Material, ray: Ray, hit: Hit) -> (attenuation: Color, scattered: Ray, ok: bool),
-}
-
-#assert(size_of(Material) == 8)
-
-Shit_Diffuse_Material  :: struct {
-    using _ : Material,
-    albedo: Color,
-}
-
-Lambertian_Material :: struct {
-    using _ : Material,
-    albedo: Color,
-}
-
-make_lambertian_material :: proc(albedo :Color = {0.5, 0.5, 0.5}) -> (self: Lambertian_Material) {
-
-    scatter :: proc(self: ^Material, ray: Ray, hit: Hit) -> (attenuation: Color, scattered: Ray, ok: bool) {
-        scatter_direction := hit.normal + vector3_random_unit();
-        scattered = ray_make(hit.position, scatter_direction);
-        // Catch degenerate scatter direction
-        if vector3_near_zero(scatter_direction) {
-            scatter_direction = hit.normal
-        }
-        attenuation = (cast(^Lambertian_Material)self)^.albedo;
-        ok = true
-        return
-    }
-
-
-    self.scatter = scatter
-    self.albedo = albedo
-
-    return
-
-}
-
-
-Metal_Material :: struct {
-    using _ : Material,
-    albedo: Color,
-}
-
-make_metal_material :: proc(albedo :Color = {0.5, 0.5, 0.5}) -> (self: Metal_Material) {
-    Self :: ^Metal_Material
-
-    scatter :: proc(self: ^Material, ray: Ray, hit: Hit) -> (attenuation: Color, scattered: Ray, ok: bool) {
-        reflected := la.reflect(la.normalize(ray.direction), hit.normal)
-        scattered = ray_make(hit.position, reflected);
-        // Catch degenerate scatter direction
-        attenuation = (cast(Self)self)^.albedo;
-        ok = true
-        return
-    }
-
-
-    self.scatter = scatter
-    self.albedo = albedo
-
-    return
-
-}
-
-
 U32Img :: struct {
     width, height :i32,
     data: [^]u32,
@@ -281,7 +216,7 @@ ray_hit_scene:: proc(
 ray_hit :: proc{ray_hit_sphere, ray_hit_scene}
 
 
-render ::  #force_inline proc(data: []u32) -> U32Img {
+render ::  #force_inline proc(cam: ^Camera, data: []u32) -> U32Img {
         // Get a randomly-sampled camera ray for the pixel at location i,j, originating from
         // the camera defocus disk.
 
@@ -365,61 +300,61 @@ render ::  #force_inline proc(data: []u32) -> U32Img {
 
 
 
+Render_Func:: #type proc(cam: ^Camera, data: []u32) -> U32Img
+loop :: proc(img_gen :Render_Func) {
 
-loop :: proc(img_gen :proc([]u32) -> U32Img) {
-
-    using rl
     title :: proc () -> cstring {
-        return TextFormat("FPS: %v\n", GetFPS())
+        return rl.TextFormat("FPS: %v\n", rl.GetFPS())
     }
 
 
-    InitWindow(SCREEN_WIDTH, SCREEN_HEIGHT, title=title());
+    rl.InitWindow(SCREEN_WIDTH, SCREEN_HEIGHT, title=title());
 
-    SetConfigFlags({.WINDOW_RESIZABLE})
+    rl.SetConfigFlags({.WINDOW_RESIZABLE})
 
 
 
-    SetTargetFPS(60);
+    rl.SetTargetFPS(60);
 
 
     @static IMG_DATA: [4000*4000]u32;
 
     data := IMG_DATA[:]
-    img : Image;
-    img.format = PixelFormat.UNCOMPRESSED_R8G8B8A8
+    img : rl.Image;
+    img.format = rl.PixelFormat.UNCOMPRESSED_R8G8B8A8
     img.mipmaps = 1
 
     u32img : U32Img;
     first := false
-    u32img = img_gen(data)
+    camera : ^Camera = nil
+    u32img = img_gen(camera, data)
     img.data = u32img.data;
     img.width = u32img.width;
     img.height = u32img.height;
     fmt.println(u32img)
-    texture := LoadTextureFromImage(img);
+    texture := rl.LoadTextureFromImage(img);
 
     { // Render as png just once
-        u32img = img_gen(data)
+        u32img = img_gen(camera, data)
         img.data = u32img.data;
-        ExportImage(img, fmt.ctprintf("img_%v.png",SAMPLES_PER_PIXEL))
+        rl.ExportImage(img, fmt.ctprintf("img_%v.png",SAMPLES_PER_PIXEL))
         SAMPLES_PER_PIXEL = 1
     }
 
-    for !WindowShouldClose() {
-        SetWindowTitle(title())
-        BeginDrawing();
-        ClearBackground(DARKBLUE);
-        u32img = img_gen(data)
+    for !rl.WindowShouldClose() {
+        rl.SetWindowTitle(title())
+        rl.BeginDrawing();
+        rl.ClearBackground(rl.DARKBLUE);
+        u32img = img_gen(camera, data)
         img.data = u32img.data;
-        UpdateTexture(texture, img.data);
-        DrawFPS(10, 10);
-        DrawTexture(texture, SCREEN_WIDTH / 2 - (img.width/2) , SCREEN_HEIGHT / 2 - (img.height/2), WHITE);
-        DrawText("This IS a texture loaded from raw image data!", 300, 370, 10, RAYWHITE);
-        EndDrawing();
+        rl.UpdateTexture(texture, img.data);
+        rl.DrawFPS(10, 10);
+        rl.DrawTexture(texture, SCREEN_WIDTH / 2 - (img.width/2) , SCREEN_HEIGHT / 2 - (img.height/2), rl.WHITE);
+        rl.DrawText("This IS a texture loaded from raw image data!", 300, 370, 10, rl.RAYWHITE);
+        rl.EndDrawing();
     }
 
-    CloseWindow();
+    rl.CloseWindow();
 }
 
 import os   "core:os"
