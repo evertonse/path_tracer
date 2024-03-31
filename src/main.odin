@@ -32,7 +32,7 @@ Sphere :: struct {
     material : ^Material,
 }
 
-sphere_make :: proc(position:= Vector3{0,0,0}, radius: f32=0.5, material: ^Material = nil) -> (self :Sphere){
+sphere_make :: proc(position:= Vector3{0,0,0}, radius: f32=0.5, material: ^Material = nil) -> (self :Sphere) {
     self.position = position
     self.radius = radius
     self.material = material
@@ -106,7 +106,7 @@ ray_at :: proc(r :Ray, t: f32) -> rl.Vector3 {
     return r.position + r.direction*t;
 }
 
-ray_color_scene :: proc(r :Ray, scene: Scene, depth := MAX_BOUNCE_DEPTH) -> Vector3 {
+ray_color_scene :: proc(r :Ray, scene: ^Scene, depth := MAX_BOUNCE_DEPTH) -> Vector3 {
     @static reflectance :f32 = 0.5
     @static lambertion := true
 
@@ -182,7 +182,7 @@ ray_hit_sphere :: proc(r: Ray, s: Sphere) -> (hit: Hit) {
 
 ray_hit_scene:: proc(
     ray: Ray, 
-    scene: Scene
+    scene: ^Scene
 ) -> Hit {
     ray := ray
     using scene
@@ -251,20 +251,54 @@ render ::  #force_inline proc(cam: ^Camera, data: []u32) -> U32Img {
     }
 
 
-    scene := SCENE
-    focal_length := 1.0
+    camera_lookfrom := Vector3{0,0,0}
+    camera_lookat   := Vector3{0,0,-1}
+    camera_up       := Vector3{0,1,0}
 
-    camera_center := Vector3{0,0,0}
 
-    viewport_u := Vector3{VIEWPORT_WIDTH,0,0}
-    viewport_v := Vector3{0, -VIEWPORT_HEIGHT,0}
+    // camera_lookfrom = Vector3{-1.5,3, 0.5}
+    // camera_lookat   = Vector3{0,0,-2}
+    // camera_up       = Vector3{0,1,0}
+    fov : f32 = FOV;  
+
+    camera_center  := camera_lookfrom
+
+    W: Vector3 = la.normalize(camera_lookfrom - camera_lookat)
+    U: Vector3 = la.normalize(la.cross(camera_up, W))
+    V: Vector3 = la.cross(W, U)
+    
+
+
+    scene : ^Scene = SCENE
+    focal_length :f32 = la.length(camera_lookfrom-camera_lookat)
+
+    h := math.tan(math.to_radians(fov)/2)
+
+    viewport_height: f32 = 2.0*h*focal_length
+    // viewport_height := VIEWPORT_HEIGHT
+    viewport_width: f32 = VIEWPORT_WIDTH
+
+
+
+    viewport_u := viewport_width  *  U
+    viewport_v := viewport_height * -V
 
     Δu : Vector3 = viewport_u/f32(IMAGE_WIDTH)
     Δv : Vector3 = viewport_v/f32(IMAGE_HEIGHT)
-
-    viewport_upper_left := camera_center - Vector3{0,0, f32(focal_length)} - viewport_u/2.0 - viewport_v/2.0
+    
+    viewport_upper_left := camera_center - f32(focal_length)*W - viewport_u/2.0 - viewport_v/2.0
 
     pixel_0_0 := viewport_upper_left +0.5*(Δu + Δv)
+
+    when !RELEASE {
+        fmt.println("h, fov, focal_length = ", h, fov, focal_length)
+        fmt.println("camera_center - f32(focal_length)*W",camera_center, '-', f32(focal_length)*W,'=', camera_center - f32(focal_length)*W)
+        rl.TraceLog(.INFO, fmt.caprintf("viewport_width = %v | viewport_height = %v\n",viewport_width, viewport_height))
+        rl.TraceLog(.INFO, fmt.caprintf("W,U,V = %v, %v, %v",W, U, V))
+        rl.TraceLog(.INFO, fmt.caprintf("Δu, Δv = %v, %v", Δu, Δv))
+        rl.TraceLog(.INFO, fmt.caprintf("viewport_u, viewport_v = %v, %v", viewport_u, viewport_v))
+        rl.TraceLog(.INFO, fmt.caprintf("viewport_upper_left=%v", viewport_upper_left))
+    }                                     
 
     width, height : i32 = IMAGE_WIDTH, IMAGE_HEIGHT
     for j in 0..<height {
@@ -294,6 +328,9 @@ render ::  #force_inline proc(cam: ^Camera, data: []u32) -> U32Img {
 
 
     img := U32Img{data = raw_data(data), width = auto_cast width, height = auto_cast height}
+
+    assert(img.height > 1 && img.width > 1)
+
     return img
 
 }
